@@ -47,6 +47,10 @@ COPY --from=builder --chown=app:app /app/prisma ./prisma
 COPY --chown=app:app scripts/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
+# Baileys sessions dir (app user deve poder escrever).
+RUN mkdir -p /app/sessions && chown -R app:app /app/sessions
+VOLUME /app/sessions
+
 # Migration 007 (opcional — role auditor) fica fora do prisma/migrations
 # porque requer senha injetada via env.
 COPY --chown=app:app prisma/optional /app/prisma/optional
