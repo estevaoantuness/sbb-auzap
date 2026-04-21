@@ -1,33 +1,47 @@
 #!/bin/sh
 set -e
 
-# Produção entrypoint — aplica migrations Prisma antes de subir o server.
-# Roda idempotente via _prisma_migrations table; no-op se já aplicadas.
+# Entrypoint produção: aplica migrations SQL idempotentes via psql antes de subir server.
+# Motivo: sbb-postgres já tem tabelas crm.* e public.* criadas pela equipe Superbem,
+# então prisma migrate deploy abortaria com P3005. Nossas migrations usam
+# CREATE TABLE IF NOT EXISTS e CREATE OR REPLACE FUNCTION — seguras pra re-aplicar.
 
 if [ -z "$DATABASE_URL" ]; then
   echo "[entrypoint] FATAL: DATABASE_URL não configurado" >&2
   exit 1
 fi
 
-echo "[entrypoint] aplicando migrations (prisma migrate deploy)..."
-npx --yes prisma migrate deploy --schema=/app/prisma/schema.prisma || {
-  echo "[entrypoint] migrate deploy falhou — abortando subida" >&2
-  exit 1
-}
+MIGRATIONS_DIR=/app/prisma/migrations
 
-# Migration 007 (role auditor) é opcional e requer AUDITOR_PWD injetado.
-# Se AUDITOR_PWD setado, roda o SQL via psql.
-if [ -n "$AUDITOR_PWD" ]; then
-  echo "[entrypoint] aplicando role auditor (007)..."
-  # psql client precisa estar disponível — checar Dockerfile
-  if command -v psql >/dev/null 2>&1; then
-    psql "$DATABASE_URL" -v auditor_pwd="'$AUDITOR_PWD'" \
-      -f /app/prisma/optional/007_role_auditor.sql \
-      || echo "[entrypoint] warn: 007 role auditor falhou (ignorando — já pode existir)"
-  else
-    echo "[entrypoint] warn: psql não instalado na imagem; skip 007"
-  fi
+if [ ! -d "$MIGRATIONS_DIR" ]; then
+  echo "[entrypoint] warn: $MIGRATIONS_DIR não existe; skip migrations"
+else
+  echo "[entrypoint] aplicando migrations SQL via psql (ordem alfabética)..."
+  for mig in $(ls -d "$MIGRATIONS_DIR"/*/ 2>/dev/null | sort); do
+    name=$(basename "$mig")
+    sql="$mig/migration.sql"
+    if [ -f "$sql" ]; then
+      echo "  → $name"
+      if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$sql" 2>&1 | tail -5; then
+        echo "[entrypoint] ERROR: migration $name falhou — abortando" >&2
+        exit 1
+      fi
+    fi
+  done
+  echo "[entrypoint] migrations aplicadas ✓"
 fi
+
+# Migration 007 opcional — role auditor (requer AUDITOR_PWD)
+if [ -n "$AUDITOR_PWD" ] && [ -f /app/prisma/optional/007_role_auditor.sql ]; then
+  echo "[entrypoint] aplicando role auditor (007)..."
+  psql "$DATABASE_URL" -v auditor_pwd="'$AUDITOR_PWD'" \
+    -f /app/prisma/optional/007_role_auditor.sql 2>&1 | tail -3 \
+    || echo "[entrypoint] warn: 007 falhou (ignorando — role pode já existir)"
+fi
+
+# Prisma client generate confirma schema/DB contract. Não aplica migration.
+echo "[entrypoint] prisma generate (ensures client up-to-date)..."
+npx --yes prisma generate --schema=/app/prisma/schema.prisma 2>&1 | tail -3 || true
 
 echo "[entrypoint] starting server..."
 exec "$@"
