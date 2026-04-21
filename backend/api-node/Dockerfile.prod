@@ -11,8 +11,11 @@ RUN apk add --no-cache openssl libc6-compat python3 make g++ git
 WORKDIR /app
 
 # Dependências (dev + prod) para o build.
+# Usa `npm install` (não `ci`) porque package-lock pode estar desatualizado após
+# adicionar Baileys; regenera lock no processo. Trocar pra `npm ci` quando lock
+# estiver estável em PR dedicada.
 COPY package*.json ./
-RUN npm ci --include=dev
+RUN npm install --no-audit --no-fund --include=dev
 
 # Prisma schema → generate client.
 COPY prisma ./prisma
