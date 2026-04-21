@@ -107,7 +107,9 @@ BEGIN
   END LOOP;
 END $policies$;
 
--- GRANTs essenciais: sbb_app precisa USAGE + ALL (owner é postgres porque migration rodou como superuser)
+-- GRANTs essenciais: sbb_app precisa USAGE + ALL (owner é postgres porque migration rodou como superuser).
+-- Inclui CREATE ON DATABASE pra pg-boss conseguir rodar `CREATE SCHEMA IF NOT EXISTS` no bootstrap.
+GRANT CREATE ON DATABASE postgres TO sbb_app;
 GRANT USAGE, CREATE ON SCHEMA agent TO sbb_app;
 GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA agent TO sbb_app;
 GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA agent TO sbb_app;
@@ -115,6 +117,14 @@ GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA agent TO sbb_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA agent GRANT ALL ON TABLES TO sbb_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA agent GRANT ALL ON SEQUENCES TO sbb_app;
 ALTER DEFAULT PRIVILEGES IN SCHEMA agent GRANT EXECUTE ON FUNCTIONS TO sbb_app;
+
+-- Ownership: transfere owner das tabelas agent.* pra sbb_app (senão pg-boss não pode ALTER)
+ALTER SCHEMA agent OWNER TO sbb_app;
+DO $owner$ DECLARE t TEXT; BEGIN
+  FOR t IN SELECT tablename FROM pg_tables WHERE schemaname='agent' LOOP
+    EXECUTE format('ALTER TABLE agent.%I OWNER TO sbb_app', t);
+  END LOOP;
+END $owner$;
 
 -- -----------------------------------------------------------------------------
 -- Funções utilitárias
