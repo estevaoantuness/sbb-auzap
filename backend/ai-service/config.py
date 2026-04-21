@@ -41,8 +41,8 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
 
-# Database Configuration
-DATABASE_URL = os.getenv("DATABASE_URL_AGENT")
+# Database Configuration — aceita DATABASE_URL (padrão) ou DATABASE_URL_AGENT (legado)
+DATABASE_URL = os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_AGENT")
 
 # Internal service URLs (ai-service → api-node, ex. POST /internal/generate-slots)
 API_NODE_URL = os.getenv("API_NODE_URL", "http://localhost:3000")
