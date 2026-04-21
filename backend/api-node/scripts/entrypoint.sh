@@ -15,6 +15,22 @@ fi
 # Limpa pra chamadas psql.
 PSQL_URL=$(echo "$DATABASE_URL" | sed -E 's/[?&](schema|connection_limit|pgbouncer)=[^&]+//g; s/\?$//')
 
+# Se POSTGRES_PASSWORD está disponível (superuser), usa pra rodar migrations.
+# Motivo: sbb_app não tem CREATE ON DATABASE, então pg-boss/CREATE SCHEMA falham.
+# Runtime (o server Node) continua usando DATABASE_URL com sbb_app.
+if [ -n "$POSTGRES_PASSWORD" ]; then
+  # Extrai host + port + db da DATABASE_URL original
+  DB_HOST=$(echo "$PSQL_URL" | sed -E 's#.*@([^:/]+).*#\1#')
+  DB_PORT=$(echo "$PSQL_URL" | sed -nE 's#.*@[^:]+:([0-9]+).*#\1#p')
+  DB_NAME=$(echo "$PSQL_URL" | sed -E 's#.*/([^/?]+).*#\1#')
+  SUPER_URL="postgresql://postgres:${POSTGRES_PASSWORD}@${DB_HOST}:${DB_PORT:-5432}/${DB_NAME:-postgres}"
+  echo "[entrypoint] migrations rodarão como postgres superuser"
+  MIGRATION_URL="$SUPER_URL"
+else
+  echo "[entrypoint] POSTGRES_PASSWORD ausente — migrations rodarão como sbb_app (pode falhar permissões)"
+  MIGRATION_URL="$PSQL_URL"
+fi
+
 MIGRATIONS_DIR=/app/prisma/migrations
 
 if [ ! -d "$MIGRATIONS_DIR" ]; then
@@ -26,7 +42,7 @@ else
     sql="$mig/migration.sql"
     if [ -f "$sql" ]; then
       echo "  → $name"
-      if ! psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$sql" 2>&1 | tail -5; then
+      if ! psql "$MIGRATION_URL" -v ON_ERROR_STOP=1 -f "$sql" 2>&1 | tail -5; then
         echo "[entrypoint] ERROR: migration $name falhou — abortando" >&2
         exit 1
       fi
@@ -38,8 +54,8 @@ fi
 # Migration 007 opcional — role auditor (requer AUDITOR_PWD)
 if [ -n "$AUDITOR_PWD" ] && [ -f /app/prisma/optional/007_role_auditor.sql ]; then
   echo "[entrypoint] aplicando role auditor (007)..."
-  psql "$PSQL_URL" -v auditor_pwd="'$AUDITOR_PWD'" \
-    -f /app/prisma/optional/007_role_auditor.sql 2>&1 | tail -3 \
+  psql "$MIGRATION_URL" -v auditor_pwd="'$AUDITOR_PWD'" \
+    -f /app/prisma/optional/007_role_auditor.sql 2>&1 | tail -5 \
     || echo "[entrypoint] warn: 007 falhou (ignorando — role pode já existir)"
 fi
 

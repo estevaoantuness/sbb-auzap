@@ -4,4 +4,4 @@ dist
 .env.*
 .git
 *.log
-prisma/migrations/
+# prisma/migrations/ — NÃO ignorar; entrypoint precisa dos SQL idempotentes
