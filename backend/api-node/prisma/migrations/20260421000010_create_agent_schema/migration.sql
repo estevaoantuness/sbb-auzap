@@ -27,8 +27,8 @@ CREATE TABLE IF NOT EXISTS agent.runs (
   model               TEXT,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (id, created_at),
-  -- Idempotência em retry pós-failover (previne double-response)
-  CONSTRAINT uq_agent_run_per_user_message UNIQUE (conversa_id, user_message_id, agent_used)
+  -- Idempotência em retry pós-failover. UNIQUE em tabela particionada deve incluir created_at.
+  CONSTRAINT uq_agent_run_per_user_message UNIQUE (conversa_id, user_message_id, agent_used, created_at)
 ) PARTITION BY RANGE (created_at);
 
 CREATE INDEX IF NOT EXISTS idx_agent_runs_conversa ON agent.runs (conversa_id, created_at DESC);
@@ -96,11 +96,25 @@ ALTER TABLE agent.router_state        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent.tool_cache          ENABLE ROW LEVEL SECURITY;
 ALTER TABLE agent.identity_flow       ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY sbb_app_all ON agent.runs              FOR ALL TO sbb_app USING (true) WITH CHECK (true);
-CREATE POLICY sbb_app_all ON agent.conversa_sumarios FOR ALL TO sbb_app USING (true) WITH CHECK (true);
-CREATE POLICY sbb_app_all ON agent.router_state      FOR ALL TO sbb_app USING (true) WITH CHECK (true);
-CREATE POLICY sbb_app_all ON agent.tool_cache        FOR ALL TO sbb_app USING (true) WITH CHECK (true);
-CREATE POLICY sbb_app_all ON agent.identity_flow     FOR ALL TO sbb_app USING (true) WITH CHECK (true);
+-- Policies idempotentes (PG não tem CREATE POLICY IF NOT EXISTS antes do 16)
+DO $policies$
+DECLARE tbl TEXT;
+BEGIN
+  FOR tbl IN SELECT unnest(ARRAY['runs','conversa_sumarios','router_state','tool_cache','identity_flow']) LOOP
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='agent' AND tablename=tbl AND policyname='sbb_app_all') THEN
+      EXECUTE format('CREATE POLICY sbb_app_all ON agent.%I FOR ALL TO sbb_app USING (true) WITH CHECK (true)', tbl);
+    END IF;
+  END LOOP;
+END $policies$;
+
+-- GRANTs essenciais: sbb_app precisa USAGE + ALL (owner é postgres porque migration rodou como superuser)
+GRANT USAGE, CREATE ON SCHEMA agent TO sbb_app;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA agent TO sbb_app;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA agent TO sbb_app;
+GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA agent TO sbb_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA agent GRANT ALL ON TABLES TO sbb_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA agent GRANT ALL ON SEQUENCES TO sbb_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA agent GRANT EXECUTE ON FUNCTIONS TO sbb_app;
 
 -- -----------------------------------------------------------------------------
 -- Funções utilitárias

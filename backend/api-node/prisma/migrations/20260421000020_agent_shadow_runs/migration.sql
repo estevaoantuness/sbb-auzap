@@ -26,6 +26,11 @@ CREATE INDEX IF NOT EXISTS idx_shadow_conversa ON agent.shadow_runs (conversa_or
 CREATE INDEX IF NOT EXISTS idx_shadow_calibration ON agent.shadow_runs (calibration_sample) WHERE calibration_sample = true;
 
 ALTER TABLE agent.shadow_runs ENABLE ROW LEVEL SECURITY;
-CREATE POLICY sbb_app_all ON agent.shadow_runs FOR ALL TO sbb_app USING (true) WITH CHECK (true);
+DO $policy$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname='agent' AND tablename='shadow_runs' AND policyname='sbb_app_all') THEN
+    EXECUTE 'CREATE POLICY sbb_app_all ON agent.shadow_runs FOR ALL TO sbb_app USING (true) WITH CHECK (true)';
+  END IF;
+END $policy$;
+GRANT ALL ON agent.shadow_runs TO sbb_app;
 
 COMMENT ON TABLE agent.shadow_runs IS 'Shadow mode read-only replay: NUNCA escreve em crm.*, apenas captura saídas pra avaliação de qualidade pré-cutover';
