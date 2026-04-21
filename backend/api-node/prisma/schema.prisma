@@ -1,0 +1,286 @@
+// ═══════════════════════════════════════════════════════════════
+// sbb-auzap — Prisma schema (Superbem single-tenant)
+//
+// IMPORTANTE: Este schema é REGENERADO via `npx prisma db pull` após
+// as migrations SQL em /superbem/scripts/migrations/*.sql serem
+// aplicadas no sbb-postgres. Prisma é SÓ consumer (typesafe client),
+// NUNCA roda `prisma migrate dev` em crm.* ou agent.*.
+//
+// Fluxo pra mudanças:
+//   1. Edita scripts/migrations/*.sql no repo /superbem
+//   2. psql $DATABASE_URL -f migration.sql
+//   3. cd /sbb-auzap/backend/api-node && npx prisma db pull
+//   4. npx prisma generate
+//   5. git add prisma/schema.prisma && commit
+//
+// Este arquivo é skeleton — `db pull` expandirá as models completas
+// a partir da introspecção do DB real.
+// ═══════════════════════════════════════════════════════════════
+
+generator client {
+  provider        = "prisma-client-js"
+  binaryTargets   = ["native", "debian-openssl-3.0.x"]
+  previewFeatures = ["multiSchema"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["crm", "agent", "public"]
+}
+
+// ─────────────────────────────────────────────────────────────
+// CRM schema (fonte: /superbem/scripts/crm_schema.sql)
+// ─────────────────────────────────────────────────────────────
+
+model Lead {
+  id                      BigInt    @id @default(autoincrement())
+  telefone                String    @unique
+  nomeWhatsapp            String?   @map("nome_whatsapp")
+  nomeReal                String?   @map("nome_real")
+  apelido                 String?
+  bairro                  String?
+  cidade                  String?   @default("Porto Nacional")
+  estado                  String?   @default("TO")
+  enderecoPreferido       String?   @map("endereco_preferido")
+  optInMarketing          Boolean   @default(false) @map("opt_in_marketing")
+  optInAt                 DateTime? @map("opt_in_at") @db.Timestamptz(6)
+  optOutAt                DateTime? @map("opt_out_at") @db.Timestamptz(6)
+  segmentoRfm             String?   @map("segmento_rfm")
+  totalConversas          Int       @default(0) @map("total_conversas")
+  totalPedidos            Int       @default(0) @map("total_pedidos")
+  totalGasto              Decimal   @default(0) @map("total_gasto") @db.Decimal(12, 2)
+  ticketMedio             Decimal?  @map("ticket_medio") @db.Decimal(10, 2)
+  primeiraConversaAt      DateTime? @map("primeira_conversa_at") @db.Timestamptz(6)
+  ultimaConversaAt        DateTime? @map("ultima_conversa_at") @db.Timestamptz(6)
+  ultimoPedidoAt          DateTime? @map("ultimo_pedido_at") @db.Timestamptz(6)
+  topCategorias           String[]  @default([]) @map("top_categorias")
+  tipoEntregaPreferida    String?   @default("delivery") @map("tipo_entrega_preferida")
+  createdAt               DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt               DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  conversas   Conversa[]
+  mensagens   Mensagem[]
+  pedidos     Pedido[]
+  eventos     EventoLead[]
+
+  @@map("leads")
+  @@schema("crm")
+}
+
+model Conversa {
+  id                 BigInt    @id @default(autoincrement())
+  leadId             BigInt    @map("lead_id")
+  telefone           String
+  iniciadaAt         DateTime  @default(now()) @map("iniciada_at") @db.Timestamptz(6)
+  encerradaAt        DateTime? @map("encerrada_at") @db.Timestamptz(6)
+  totalMensagens     Int       @default(0) @map("total_mensagens")
+  mensagensCliente   Int       @default(0) @map("mensagens_cliente")
+  mensagensMaria     Int       @default(0) @map("mensagens_maria")
+  tevePedido         Boolean   @default(false) @map("teve_pedido")
+  pedidoId           BigInt?   @map("pedido_id")
+  intencaoDetectada  String?   @map("intencao_detectada")
+  sentimento         String?
+  resumoIa           String?   @map("resumo_ia")
+  encerradaPor       String?   @default("timeout") @map("encerrada_por")
+  createdAt          DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  lead      Lead       @relation(fields: [leadId], references: [id])
+  mensagens Mensagem[]
+  eventos   EventoLead[]
+  pedidos   Pedido[]
+
+  @@map("conversas")
+  @@schema("crm")
+}
+
+model Mensagem {
+  id          BigInt    @id @default(autoincrement())
+  conversaId  BigInt    @map("conversa_id")
+  leadId      BigInt    @map("lead_id")
+  telefone    String
+  direcao     String    // 'in' | 'out'
+  tipo        String?   @default("texto")  // 'texto' | 'audio' | 'imagem' | 'documento'
+  conteudo    String
+  status      String?   @default("pendente") // 'pendente' | 'enviada' | 'entregue' | 'lida' | 'falha_envio' | 'falha_permanente'
+  messageIdWaba String? @map("message_id_waba")
+  readAt      DateTime? @map("read_at") @db.Timestamptz(6)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  conversa Conversa @relation(fields: [conversaId], references: [id])
+  lead     Lead     @relation(fields: [leadId], references: [id])
+
+  @@index([conversaId, createdAt])
+  @@index([leadId, createdAt])
+  @@map("mensagens")
+  @@schema("crm")
+}
+
+model EventoLead {
+  id             BigInt    @id @default(autoincrement())
+  leadId         BigInt    @map("lead_id")
+  conversaId     BigInt?   @map("conversa_id")
+  telefone       String
+  tipo           String
+  subtipo        String?
+  fonte          String    @default("sistema")
+  payload        Json      @default("{}")
+  valorMonetario Decimal?  @map("valor_monetario") @db.Decimal(10, 2)
+  produtoSku     String?   @map("produto_sku")
+  produtoNome    String?   @map("produto_nome")
+  idempotencyKey String?   @unique @map("idempotency_key")
+  processadoAt   DateTime  @default(now()) @map("processado_at") @db.Timestamptz(6)
+
+  lead     Lead      @relation(fields: [leadId], references: [id])
+  conversa Conversa? @relation(fields: [conversaId], references: [id])
+
+  @@index([leadId, processadoAt])
+  @@index([tipo, processadoAt])
+  @@map("eventos_lead")
+  @@schema("crm")
+}
+
+model Pedido {
+  id             BigInt    @id @default(autoincrement())
+  leadId         BigInt    @map("lead_id")
+  conversaId     BigInt?   @map("conversa_id")
+  telefone       String
+  numero         String    @unique
+  status         String    @default("rascunho")
+  subtotal       Decimal   @default(0) @db.Decimal(10, 2)
+  taxaEntrega    Decimal   @default(0) @map("taxa_entrega") @db.Decimal(10, 2)
+  desconto       Decimal   @default(0) @db.Decimal(10, 2)
+  total          Decimal?  @db.Decimal(10, 2)
+  tipoEntrega    String?   @default("delivery") @map("tipo_entrega")
+  enderecoEntrega String?  @map("endereco_entrega")
+  bairroEntrega  String?   @map("bairro_entrega")
+  observacoes    String?
+  confirmadoAt   DateTime? @map("confirmado_at") @db.Timestamptz(6)
+  entregueAt     DateTime? @map("entregue_at") @db.Timestamptz(6)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt      DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  lead     Lead      @relation(fields: [leadId], references: [id])
+  conversa Conversa? @relation(fields: [conversaId], references: [id])
+
+  @@map("pedidos")
+  @@schema("crm")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Agent schema (fonte: /superbem/scripts/migrations/001_create_agent_schema.sql)
+// ─────────────────────────────────────────────────────────────
+
+model AgentRun {
+  id              BigInt   @default(autoincrement())
+  conversaId      BigInt   @map("conversa_id")
+  leadId          BigInt   @map("lead_id")
+  userMessageId   BigInt?  @map("user_message_id")
+  agentUsed       String   @map("agent_used")
+  stage           String?
+  inputTokens     Int?     @map("input_tokens")
+  outputTokens    Int?     @map("output_tokens")
+  latencyMs       Int?     @map("latency_ms")
+  replyRaw        String?  @map("reply_raw")
+  replyFinal      String?  @map("reply_final")
+  toolCalls       Json     @default("[]") @map("tool_calls")
+  guardrailsFired String[] @default([]) @map("guardrails_fired")
+  model           String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@id([id, createdAt])
+  @@unique([conversaId, userMessageId, agentUsed], map: "uq_agent_run_per_user_message")
+  @@map("runs")
+  @@schema("agent")
+}
+
+model ConversaSumario {
+  conversaId BigInt   @id @map("conversa_id")
+  text       String   @default("")
+  covered    Int      @default(0)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("conversa_sumarios")
+  @@schema("agent")
+}
+
+model RouterState {
+  conversaId     BigInt   @id @map("conversa_id")
+  agent          String?
+  stage          String?
+  requiredTools  String[] @map("required_tools")
+  payload        Json     @default("{}")
+  updatedAt      DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("router_state")
+  @@schema("agent")
+}
+
+model ToolCache {
+  id        BigInt   @id @default(autoincrement())
+  toolName  String   @map("tool_name")
+  argsHash  String   @map("args_hash")
+  scopeKey  String?  @map("scope_key")
+  result    Json
+  expiresAt DateTime @map("expires_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([toolName, argsHash, scopeKey])
+  @@index([expiresAt])
+  @@map("tool_cache")
+  @@schema("agent")
+}
+
+model IdentityFlow {
+  conversaId BigInt   @id @map("conversa_id")
+  phase      String?
+  partial    Json     @default("{}")
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("identity_flow")
+  @@schema("agent")
+}
+
+model ShadowRun {
+  id                 BigInt   @id @default(autoincrement())
+  conversaOrigemId   BigInt   @map("conversa_origem_id")
+  turno              Int
+  userMsgRaw         String   @map("user_msg_raw")
+  userMsgAnon        String?  @map("user_msg_anon")
+  mariaReply         String   @map("maria_reply")
+  auzapReply         String   @map("auzap_reply")
+  auzapLatencyMs     Int?     @map("auzap_latency_ms")
+  auzapAgentUsed     String?  @map("auzap_agent_used")
+  auzapToolCalls     Json     @default("[]") @map("auzap_tool_calls")
+  judgeModel         String?  @map("judge_model")
+  judgeVerdict       Json?    @map("judge_verdict")
+  calibrationSample  Boolean  @default(false) @map("calibration_sample")
+  humanVerdict       Json?    @map("human_verdict")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@unique([conversaOrigemId, turno])
+  @@map("shadow_runs")
+  @@schema("agent")
+}
+
+// ─────────────────────────────────────────────────────────────
+// Public schema — apenas vitrine (read-only do sync CISS)
+// ─────────────────────────────────────────────────────────────
+
+model Vitrine {
+  erpId        String    @id @map("erp_id")
+  nome         String
+  nomeBusca    String    @map("nome_busca")
+  categoria    String?
+  precoVarejo  Decimal?  @map("preco_varejo") @db.Decimal(10, 2)
+  precoPromo   Decimal?  @map("preco_promo") @db.Decimal(10, 2)
+  emPromocao   Boolean   @default(false) @map("em_promocao")
+  saldoEstoque Decimal?  @map("saldo_estoque") @db.Decimal(10, 3)
+  temEstoque   Boolean   @default(false) @map("tem_estoque")
+  dtalteracao  DateTime? @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @map("updated_at") @db.Timestamptz(6)
+
+  @@map("vitrine")
+  @@schema("public")
+}

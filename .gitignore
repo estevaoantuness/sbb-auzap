@@ -1,0 +1,85 @@
+# ───────────────────────────────────────────────────────────────
+# Envs (NUNCA commitar)
+# ───────────────────────────────────────────────────────────────
+.env
+.env.dev
+.env.local
+.env.*.local
+**/.env
+**/.env.dev
+**/.env.local
+
+# ───────────────────────────────────────────────────────────────
+# Secrets locais do dev
+# ───────────────────────────────────────────────────────────────
+.sbb-auzap-secrets.local
+secrets.local
+
+# ───────────────────────────────────────────────────────────────
+# Node
+# ───────────────────────────────────────────────────────────────
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ───────────────────────────────────────────────────────────────
+# Python
+# ───────────────────────────────────────────────────────────────
+**/__pycache__
+**/*.pyc
+**/*.pyo
+**/venv
+**/.venv
+**/.pytest_cache
+**/.mypy_cache
+
+# ───────────────────────────────────────────────────────────────
+# WhatsApp Baileys (contingência; não usado no MVP)
+# ───────────────────────────────────────────────────────────────
+baileys_sessions/
+backend/api-node/sessions/
+
+# ───────────────────────────────────────────────────────────────
+# Prisma — DDL é SQL puro em /superbem/scripts/migrations,
+# não Prisma migrate. Não versionar migrations geradas.
+# ───────────────────────────────────────────────────────────────
+backend/api-node/prisma/migrations/
+backend/api-node/prisma/dev.db*
+
+# ───────────────────────────────────────────────────────────────
+# Logs
+# ───────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ───────────────────────────────────────────────────────────────
+# Editor / OS
+# ───────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ───────────────────────────────────────────────────────────────
+# Legacy (herdado do AuZap; pode sair depois da limpeza)
+# ───────────────────────────────────────────────────────────────
+frontend copy
+.claude
+.hai
+terraform/.terraform/
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfvars
+terraform/crash.log
+terraform/override.tf
+terraform/override.tf.json
+terraform/*_override.tf
+terraform/*_override.tf.json
+terraform/*.pem
+terraform/id_ed25519
+terraform/id_ed25519.pub
+terraform/authorized_keys

@@ -1,0 +1,11 @@
+agno
+openai
+fastapi
+uvicorn
+watchfiles>=0.21
+asyncpg>=0.29
+psycopg2-binary
+python-dotenv
+pydantic
+structlog
+tzdata>=2024.1

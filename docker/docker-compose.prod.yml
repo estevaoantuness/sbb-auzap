@@ -1,0 +1,91 @@
+# Produção — REFERÊNCIA APENAS.
+# Em produção, o deploy real é via Coolify API REST (ver scripts/deploy-prod.sh e
+# coolify/api-rest-reference.md). Este arquivo serve como documentação do estado
+# desejado e para testes locais com imagens prod.
+#
+# Uso local (smoke em ambiente simulado):
+#   docker compose -f docker/docker-compose.prod.yml build
+#   docker compose -f docker/docker-compose.prod.yml up -d
+#
+# Diferenças vs dev:
+#   - Sem postgres local (usa sbb-postgres externo via rede sbb-db, hostname postgres-sbb:6432)
+#   - Sem port publishing público (só bind interno 127.0.0.1)
+#   - Multi-stage Dockerfiles prod (imagem pequena, sem devDeps)
+#   - Sem volumes de código (código no build)
+#   - NODE_ENV=production / uvicorn sem --reload
+
+name: sbb-auzap-prod
+
+services:
+  api-node:
+    build:
+      context: ../backend/api-node
+      dockerfile: Dockerfile.prod
+    image: sbb-auzap-api:prod
+    container_name: sbb-auzap-api
+    restart: unless-stopped
+    ports:
+      # Em Coolify, o proxy Traefik cuida do FQDN. Porta só interna em stack compose.
+      - "127.0.0.1:3000:3000"
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      NODE_ENV: production
+    volumes:
+      # Persistência Baileys (sessão WhatsApp). Obrigatório se WHATSAPP_PROVIDER=baileys.
+      # Em Coolify, configurar como Persistent Storage > Volume Mount.
+      - baileys_sessions:/app/sessions
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - sbb-db
+      - sbb-auzap-prod
+    mem_limit: 768m
+
+  ai-service:
+    build:
+      context: ../backend/ai-service
+      dockerfile: Dockerfile.prod
+    image: sbb-auzap-ai:prod
+    container_name: sbb-auzap-ai
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    env_file:
+      - path: ../.env
+        required: false
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - sbb-db
+      - sbb-auzap-prod
+    mem_limit: 1g
+
+volumes:
+  # Baileys session persistence — usado no MVP (WHATSAPP_PROVIDER=baileys).
+  # Contém auth creds, keys, estado. Perder = re-scan QR code.
+  baileys_sessions:
+    name: sbb-auzap-baileys-sessions
+
+networks:
+  # Rede externa onde vive o sbb-postgres (com PgBouncer em postgres-sbb:6432).
+  # Deve existir ANTES do deploy. Validado em C3.
+  sbb-db:
+    external: true
+    name: sbb-db
+  # Rede interna do stack AuZap (comunicação api-node <-> ai-service).
+  sbb-auzap-prod:
+    driver: bridge
+    name: sbb-auzap-prod

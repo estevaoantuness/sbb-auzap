@@ -1,0 +1,110 @@
+# Dev local — stack completa pro Estevão / qualquer dev rodar localmente.
+# Produção usa Coolify (não docker-compose). Ver:
+#   /Users/estevaoantunes/.claude/plans/valide-ambas-stacks-antes-groovy-mitten.md
+#
+# Uso:
+#   ./scripts/bootstrap-dev.sh                            # primeira vez: cria .env.dev, sobe, migra
+#   docker compose -f docker/docker-compose.dev.yml up    # foreground
+#   docker compose -f docker/docker-compose.dev.yml up -d # background
+#   docker compose -f docker/docker-compose.dev.yml logs -f api-node
+#
+# Arquitetura Maria v2 (single-tenant Super Bem Barato):
+#   - Postgres (pgvector/pg17) com schemas crm.* + agent.* + public.*
+#   - API Node (Express + Prisma + pg-boss) — webhook WhatsApp Cloud API + worker pg-boss
+#   - AI Service (FastAPI + agno) — multi-agente (router → specialists)
+#   - SEM Redis (pg-boss usa Postgres como backend de fila)
+#   - SEM Baileys (provider é Cloud API Meta; Baileys foi descartado — ver D1 do plano)
+
+name: sbb-auzap-dev
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: sbb-auzap-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sbb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: devlocal
+      # Mesmo valor que produção aceita (ver D3 — max_connections 50→100).
+      POSTGRES_MAX_CONNECTIONS: "100"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Bind read-only das migrations SQL pra poder aplicar via psql de dentro do container.
+      - ../../superbem/scripts/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d sbb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - sbb-auzap-dev
+
+  api-node:
+    build:
+      context: ../backend/api-node
+      dockerfile: Dockerfile
+    container_name: sbb-auzap-api-node
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      # required:false → se .env.dev ainda não existe, compose não falha (bootstrap cria).
+      - path: ../.env.dev
+        required: false
+    environment:
+      # Override DATABASE_URL pro hostname de rede interna (postgres, não localhost).
+      DATABASE_URL: postgresql://postgres:devlocal@postgres:5432/sbb?schema=public&connection_limit=10
+      AI_SERVICE_URL: http://ai-service:8000
+      NODE_ENV: development
+      PORT: "3000"
+    volumes:
+      # Hot reload: monta o código-fonte do host. node_modules fica no container.
+      - ../backend/api-node/src:/app/src
+      - ../backend/api-node/prisma:/app/prisma
+      - ../backend/api-node/package.json:/app/package.json:ro
+      - ../backend/api-node/tsconfig.json:/app/tsconfig.json:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - sbb-auzap-dev
+
+  ai-service:
+    build:
+      context: ../backend/ai-service
+      dockerfile: Dockerfile
+    container_name: sbb-auzap-ai-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: ../.env.dev
+        required: false
+    environment:
+      # asyncpg pede hostname da rede interna.
+      DATABASE_URL: postgresql://postgres:devlocal@postgres:5432/sbb
+    volumes:
+      # Hot reload uvicorn --reload.
+      - ../backend/ai-service:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # DNS públicos para resolver api.openai.com / graph.facebook.com em redes restritas.
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    networks:
+      - sbb-auzap-dev
+
+volumes:
+  postgres_data:
+    name: sbb-auzap-postgres-data
+
+networks:
+  sbb-auzap-dev:
+    driver: bridge
+    name: sbb-auzap-dev

@@ -1,0 +1,49 @@
+# Produção — multi-stage. Runner tem só bin/lib de Python + código.
+#
+# Stage 1 (builder): pip install num venv isolado (evita arrastar gcc pra imagem final)
+# Stage 2 (runner):  copia site-packages + bin do builder, sem toolchain
+
+# ── Stage 1: Builder ───────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+
+# ── Stage 2: Runner ────────────────────────────────────────────
+FROM python:3.11-slim AS runner
+
+# libpq5 é o runtime (psycopg2-binary não precisa, mas asyncpg + psycopg2 em alguns builds sim) + curl pro healthcheck + tini pra signals.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    curl \
+    tini \
+ && rm -rf /var/lib/apt/lists/* \
+ && groupadd -r app && useradd -r -g app -u 1001 app
+
+# Copia dependências do builder (sem toolchain gcc).
+COPY --from=builder /install /usr/local
+
+WORKDIR /app
+COPY --chown=app:app . .
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PORT=8000
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+USER app
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+# Produção: 2 workers (ai-service faz I/O pesado OpenAI; mais workers = mais RAM).
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
