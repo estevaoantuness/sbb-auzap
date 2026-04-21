@@ -87,13 +87,35 @@ export async function registerInboundWorker(
 /**
  * Job agendado — agregador de jobs schedulados.
  * Substituto do pg_cron se este não estiver disponível (fallback do D9 caminho C).
+ *
+ * pg-boss v10 exige `createQueue` antes de `schedule` (diferente da v9 auto-create).
  */
 export async function scheduleMaintenanceJobs(): Promise<void> {
   const boss = await getBoss()
 
-  // Ex: boss.schedule('rotate-partitions', '0 3 * * *', { task: 'rotate_runs_partitions' })
-  await boss.schedule('rotate-partitions', '0 3 * * *', {})
-  await boss.schedule('purge-pii', '15 3 * * *', {})
-  await boss.schedule('cleanup-tool-cache', '0 * * * *', {})
-  await boss.schedule('close-inactive-conversations', '*/15 * * * *', {})
+  const jobs: Array<[string, string]> = [
+    ['rotate-partitions', '0 3 * * *'],
+    ['purge-pii', '15 3 * * *'],
+    ['cleanup-tool-cache', '0 * * * *'],
+    ['close-inactive-conversations', '*/15 * * * *'],
+  ]
+
+  // Inclui também as queues de mensagens pra não dar erro na primeira run
+  const dataQueues = [QUEUE_INBOUND, QUEUE_RETRY_SEND]
+  for (const q of dataQueues) {
+    try {
+      await boss.createQueue(q)
+    } catch {
+      /* já existe */
+    }
+  }
+
+  for (const [name, cron] of jobs) {
+    try {
+      await boss.createQueue(name)
+    } catch {
+      /* já existe */
+    }
+    await boss.schedule(name, cron, {})
+  }
 }
