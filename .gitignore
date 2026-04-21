@@ -43,10 +43,8 @@ baileys_sessions/
 backend/api-node/sessions/
 
 # ───────────────────────────────────────────────────────────────
-# Prisma — DDL é SQL puro em /superbem/scripts/migrations,
-# não Prisma migrate. Não versionar migrations geradas.
+# Prisma — migrations SQL SÃO versionadas (aplicadas via psql no entrypoint)
 # ───────────────────────────────────────────────────────────────
-backend/api-node/prisma/migrations/
 backend/api-node/prisma/dev.db*
 
 # ───────────────────────────────────────────────────────────────
