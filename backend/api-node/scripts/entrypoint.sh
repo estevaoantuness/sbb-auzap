@@ -11,6 +11,10 @@ if [ -z "$DATABASE_URL" ]; then
   exit 1
 fi
 
+# libpq/psql não aceita ?schema= nem ?connection_limit= (que Prisma usa).
+# Limpa pra chamadas psql.
+PSQL_URL=$(echo "$DATABASE_URL" | sed -E 's/[?&](schema|connection_limit|pgbouncer)=[^&]+//g; s/\?$//')
+
 MIGRATIONS_DIR=/app/prisma/migrations
 
 if [ ! -d "$MIGRATIONS_DIR" ]; then
@@ -22,7 +26,7 @@ else
     sql="$mig/migration.sql"
     if [ -f "$sql" ]; then
       echo "  → $name"
-      if ! psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$sql" 2>&1 | tail -5; then
+      if ! psql "$PSQL_URL" -v ON_ERROR_STOP=1 -f "$sql" 2>&1 | tail -5; then
         echo "[entrypoint] ERROR: migration $name falhou — abortando" >&2
         exit 1
       fi
@@ -34,7 +38,7 @@ fi
 # Migration 007 opcional — role auditor (requer AUDITOR_PWD)
 if [ -n "$AUDITOR_PWD" ] && [ -f /app/prisma/optional/007_role_auditor.sql ]; then
   echo "[entrypoint] aplicando role auditor (007)..."
-  psql "$DATABASE_URL" -v auditor_pwd="'$AUDITOR_PWD'" \
+  psql "$PSQL_URL" -v auditor_pwd="'$AUDITOR_PWD'" \
     -f /app/prisma/optional/007_role_auditor.sql 2>&1 | tail -3 \
     || echo "[entrypoint] warn: 007 falhou (ignorando — role pode já existir)"
 fi

@@ -19,11 +19,14 @@ let bossInstance: PgBoss | null = null
 export async function getBoss(): Promise<PgBoss> {
   if (bossInstance) return bossInstance
 
+  // Remove query params que Prisma entende mas libpq/pg não (schema, connection_limit)
+  const dbUrl = (process.env.DATABASE_URL || '').replace(/[?&](schema|connection_limit|pgbouncer)=[^&]+/g, '').replace(/\?$/, '')
   const boss = new PgBoss({
-    connectionString: process.env.DATABASE_URL,
-    max: Number(process.env.PGBOSS_POOL_MAX ?? '5'),     // pool separado do Prisma
-    archiveCompletedAfterSeconds: 60 * 60 * 24,           // histórico 24h
-    deleteAfterDays: 7,                                   // purge
+    connectionString: dbUrl,
+    schema: process.env.PGBOSS_SCHEMA || 'agent',        // sbb_app tem CREATE em 'agent' (migration 001)
+    max: Number(process.env.PGBOSS_POOL_MAX ?? '5'),
+    archiveCompletedAfterSeconds: 60 * 60 * 24,
+    deleteAfterDays: 7,
     retentionHours: 24 * 7,
   })
 
