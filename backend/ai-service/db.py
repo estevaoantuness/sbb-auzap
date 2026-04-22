@@ -8,10 +8,16 @@ _pool = None
 def get_pool():
     global _pool
     if _pool is None:
+        dsn = os.getenv("DATABASE_URL") or os.getenv("DATABASE_URL_AGENT")
+        if not dsn:
+            raise RuntimeError(
+                "[db] nem DATABASE_URL nem DATABASE_URL_AGENT estão setados — "
+                "ai-service não consegue conectar no Postgres"
+            )
         _pool = pool.ThreadedConnectionPool(
             minconn=1,
             maxconn=10,
-            dsn=os.getenv("DATABASE_URL_AGENT"),
+            dsn=dsn,
             cursor_factory=psycopg2.extras.RealDictCursor,
         )
     return _pool

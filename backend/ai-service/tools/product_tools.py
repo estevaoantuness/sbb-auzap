@@ -24,33 +24,48 @@ DEFAULT_LIMIT = 6
 MAX_LIMIT = 12
 
 
-def _freshness_minutes(dtalteracao) -> int | None:
-    if dtalteracao is None:
+def _freshness_minutes(ts) -> int | None:
+    if ts is None:
         return None
-    if isinstance(dtalteracao, datetime):
-        dt = dtalteracao if dtalteracao.tzinfo else dtalteracao.replace(tzinfo=timezone.utc)
+    if isinstance(ts, datetime):
+        dt = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
         delta = datetime.now(timezone.utc) - dt
         return int(delta.total_seconds() // 60)
     return None
 
 
 def _normalize_row(row: dict) -> dict:
-    """Normaliza colunas de `public.buscar_produto` → dict pro LLM."""
+    """Normaliza colunas de `public.buscar_produto` → dict pro LLM.
+
+    Schema real (public.vitrine via RPC buscar_produto):
+      erp_id, nome, nome_busca, nome_curto, categoria, subcategoria,
+      preco, preco_promo, em_promocao, saldo, tem_estoque, ativo,
+      synced_at, preco_synced_at, created_at, updated_at
+    """
     preco_varejo = row.get("preco_varejo") or row.get("preco") or 0
     preco_promo = row.get("preco_promo")
-    em_promocao = bool(row.get("em_promocao") or (preco_promo and float(preco_promo) > 0))
-    saldo = row.get("saldo_estoque") or row.get("estoque") or 0
+    em_promocao_raw = row.get("em_promocao")
+    em_promocao = bool(
+        em_promocao_raw if em_promocao_raw is not None
+        else (preco_promo and float(preco_promo) > 0)
+    )
+    saldo = row.get("saldo") or row.get("saldo_estoque") or row.get("estoque") or 0
+    tem_estoque_raw = row.get("tem_estoque")
+    tem_estoque = bool(tem_estoque_raw if tem_estoque_raw is not None else float(saldo or 0) > 0)
+    # Freshness: preferir preco_synced_at (atualização de preço), fallback synced_at
+    freshness_src = row.get("preco_synced_at") or row.get("synced_at") or row.get("dtalteracao")
     return {
         "nome": row.get("nome") or row.get("descrcomproduto") or "",
         "sku": row.get("sku") or row.get("erp_id") or row.get("codproduto"),
         "categoria": row.get("categoria") or row.get("descrcomgrupo"),
+        "subcategoria": row.get("subcategoria"),
         "unidade": row.get("unidade") or row.get("unidade_medida") or "un",
         "preco_varejo": float(preco_varejo or 0),
         "preco_promo": float(preco_promo) if preco_promo not in (None, "") else None,
         "em_promocao": em_promocao,
         "saldo_estoque": float(saldo or 0),
-        "tem_estoque": float(saldo or 0) > 0,
-        "freshness_min": _freshness_minutes(row.get("dtalteracao")),
+        "tem_estoque": tem_estoque,
+        "freshness_min": _freshness_minutes(freshness_src),
     }
 
 
