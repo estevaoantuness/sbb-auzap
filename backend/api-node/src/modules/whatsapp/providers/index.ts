@@ -8,6 +8,7 @@
 import type { MessagingProvider } from './types'
 import { baileysProvider } from './baileys'
 import * as cloudApi from './cloudApi'
+import { evolutionProvider } from './evolution'
 
 function cloudApiAdapter(): MessagingProvider {
   return {
@@ -33,8 +34,19 @@ let cached: MessagingProvider | null = null
 export function getProvider(): MessagingProvider {
   if (cached) return cached
   const choice = (process.env.WHATSAPP_PROVIDER || 'baileys').toLowerCase()
-  cached = choice === 'cloud_api' ? cloudApiAdapter() : baileysProvider
-  console.log(`[whatsapp] provider selecionado: ${choice === 'cloud_api' ? 'cloud_api' : 'baileys'}`)
+  switch (choice) {
+    case 'cloud_api':
+      cached = cloudApiAdapter()
+      break
+    case 'evolution':
+      cached = evolutionProvider
+      break
+    default:
+      cached = baileysProvider
+  }
+  const resolved =
+    choice === 'cloud_api' || choice === 'evolution' ? choice : 'baileys'
+  console.log(`[whatsapp] provider selecionado: ${resolved}`)
   return cached
 }
 

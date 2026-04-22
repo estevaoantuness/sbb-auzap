@@ -12,7 +12,7 @@ export type MessagingStatus =
   | 'unknown'
 
 export interface ProviderStatus {
-  provider: 'baileys' | 'cloud_api'
+  provider: 'baileys' | 'cloud_api' | 'evolution'
   status: MessagingStatus
   phoneNumber?: string           // só se connected (Baileys) ou sempre (Cloud API)
   tier?: string                  // só Cloud API (messaging_limit_tier)

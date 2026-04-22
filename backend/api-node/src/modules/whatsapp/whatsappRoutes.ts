@@ -1,9 +1,15 @@
 import { Router } from 'express'
 import { handleWebhook } from './webhookController'
+import { handleEvolutionWebhook } from './evolutionWebhookController'
 import { verifyMetaSignature, verifyChallenge } from '../../middleware/metaSignature'
+import { evolutionWebhookGuard } from '../../middleware/evolutionWebhookGuard'
 import { getProvider } from './providers'
 
 const router = Router()
+
+// ── Evolution API webhook (só ativo se WHATSAPP_PROVIDER=evolution) ──
+// Declarado ANTES de /webhook (Cloud API) pra evitar conflito de roteamento.
+router.post('/webhook/evolution', evolutionWebhookGuard, handleEvolutionWebhook)
 
 // ── Cloud API webhook (só ativo se WHATSAPP_PROVIDER=cloud_api) ──
 router.get('/webhook', verifyChallenge)
