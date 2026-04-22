@@ -3,6 +3,242 @@
 > Sequência executável única pra sair de "LIVE aguardando QR" → "produção estável com 1-3 clientes internos" → "tráfego real".
 > Dependências entre fases são estritas. Ordem = ordem de execução.
 
+---
+
+## ⚠️ Revisão 2026-04-22 — Red team feedback aplicado
+
+**Mudança de direção:** migrar de Baileys próprio → Evolution API **shared** (`evolution.pangeia.cloud`, instância `SuperBemBarato`) reutilizando infra existente. Red team apontou 7 pontos que reordenam o plano:
+
+### Princípios (inegociáveis pré-cutover)
+
+1. **Cloudflare Access obrigatório ANTES de canal novo** — `VITE_INTERNAL_API_KEY` no bundle continua o bloqueador #3 do auditor 21/04. Abrir canal Evolution sem auth real = ban de chip + spam atribuível ao backend.
+2. **Evolution-Baileys ≠ imunidade a ban** — ganho real é estabilidade de conexão (heartbeat, state em Postgres, reconnect). Ban risk persiste. Registro de risco explícito.
+3. **WABA Cloud API é a saída real** — abrir processo Meta Business **em paralelo** à migração Evolution. Não bloqueia cutover de hoje; 2-3 semanas pra estar pronto.
+4. **Instância dedicada ≤30 dias** — Evolution shared com Leuzzi/Operate/Oxy = noisy neighbor + LGPD frágil (PII de SBB mistura com outros projetos). Aceitar pro MVP, migrar antes do 2º cliente.
+5. **Separar frentes A e B** — Evolution primeiro, estabilizar 24h, depois Dock global. Rollback de canal com 2 commits no ar = cascata de incidentes.
+
+### Fase 0.5 (NOVA) — Pré-Evolution checks (30min, hoje)
+
+Antes de escrever qualquer linha do provider Evolution:
+
+#### 0.5.1 — Inspecionar instância `SuperBemBarato` (residuais da equipe SBB antiga)
+```bash
+EVO_URL="https://evolution.pangeia.cloud"
+EVO_KEY="QSLLMr6irOKF45qtyE3rcmWycZXYeNfI07Hofc00"
+
+# Webhook residual (provável apontando pra Chatwoot legacy)
+curl -s -H "apikey: $EVO_KEY" "$EVO_URL/webhook/find/SuperBemBarato" | jq
+
+# Chatwoot binding
+curl -s -H "apikey: $EVO_KEY" "$EVO_URL/chatwoot/find/SuperBemBarato" | jq
+
+# Estado completo
+curl -s -H "apikey: $EVO_KEY" "$EVO_URL/instance/fetchInstances?instanceName=SuperBemBarato" | jq
+```
+**Decisão:** se webhook existe apontando pra algo ativo → `DELETE /webhook/SuperBemBarato` antes de setar o novo. Se Chatwoot binding existe → `POST /chatwoot/set` com `enabled=false` primeiro.
+
+#### 0.5.2 — Chip: uso humano ou novo?
+Red team: chip novo tem heurística anti-fraude agressiva. Prática: warm-up 7-14 dias (conversas humanas, grupos, recebimentos) **antes** de plugar em bot.
+
+**Pergunta ao user:** chip tem histórico? Se não, duas opções:
+- (a) Usar chip pessoal temporariamente pra testes internos + adquirir chip novo pra prod com warm-up
+- (b) Assumir risco documentado de ban nas primeiras 2 semanas
+
+#### 0.5.3 — Idempotência em `crm.mensagens`
+```sql
+-- Migration: crm.mensagens UNIQUE em message_id_waba pra dedup Evolution retries
+ALTER TABLE crm.mensagens
+  ADD CONSTRAINT uq_mensagens_wa_message_id UNIQUE (message_id_waba)
+  WHERE message_id_waba IS NOT NULL;
+```
+Sem isso, retry do webhook Evolution (3× default) vira 3 turns Maria + 3× custo OpenAI.
+
+#### 0.5.4 — Test bug Evolution 2.3.7 #2390 (buttons/lists)
+```bash
+# Depois de conectar QR, testar sendList (Maria hoje só manda texto, mas vale validar pra roadmap de catálogo visual)
+curl -sX POST -H "apikey: $EVO_KEY" -H "Content-Type: application/json" \
+  "$EVO_URL/message/sendList/SuperBemBarato" \
+  -d '{"number":"<SEU_TEL>","title":"t","description":"t","buttonText":"ver","sections":[{"title":"s","rows":[{"title":"a"}]}]}'
+# Se 500 "isZero": bug confirmado → downgrade pra 2.3.6 via Coolify env
+# Se 200/OK: seguir com 2.3.7
+```
+
+#### 0.5.5 — Validar `data.key.fromMe` no payload
+Evolution emite `SEND_MESSAGE` como `event: "messages.upsert"` (lowercase com dot), IGUAL ao inbound. Sem filter `fromMe=true`, provider processa ecos da própria Maria como mensagens novas = loop de resposta = ban imediato.
+
+**Obrigatório no `providers/evolution.ts`:**
+```ts
+if (event === 'messages.upsert' && data?.key?.fromMe === true) return  // ignora ecos
+if (data?.instance !== 'SuperBemBarato') return                        // valida target
+```
+
+---
+
+### Fase 0.7 (NOVA) — Cloudflare Access (2h, bloqueador anterior à Evolution)
+
+Não é mais Fase 1.1 — sobe pra pré-canal. Motivo: abrir novo provider com dashboard ainda público e key no bundle = alguém pode disparar `/internal/debug/simulate-message` e queimar custo OpenAI ou trigger de spam atribuível à Maria.
+
+Roteiro:
+1. Cloudflare Zero Trust → Access → Applications → Add Self-hosted
+2. Domains: `auzap-api.pangeia.cloud` + `superbembarato.pangeia.cloud`
+3. Policy: email `@superbembarato.com.br` OR `estevao.antunes.rocha@gmail.com` (OTP via email)
+4. **Bypass apenas em `/whatsapp/webhook/evolution`** com policy "Bypass" + IP allowlist do container Evolution (rede coolify interna)
+5. Teste em browser privado → deve exigir OTP antes de carregar dashboard
+
+**Alternativa ao bypass por URL** (red team sugere mais seguro): IP allowlist no middleware Express antes do webhook:
+```ts
+const EVOLUTION_IPS = (process.env.EVOLUTION_ALLOWED_IPS || '').split(',')
+router.use('/whatsapp/webhook/evolution', (req, res, next) => {
+  if (!EVOLUTION_IPS.includes(req.ip)) return res.status(403).send('ip not allowed')
+  next()
+})
+```
+
+---
+
+### Fase 2 REVISADA — Migração Evolution (5-6h, depois de 0.5 + 0.7)
+
+Adições ao plano Frente A original:
+
+#### A0 — Baseline Maria-N8N (30min)
+Antes de migrar: rodar `psql -f ~/superbem/scripts/baseline-maria.sql` pra capturar latência/erro/custo atuais. Sem baseline, não temos como declarar sucesso.
+
+#### A3.5 — SHADOW_MODE=true por 30min pós-cutover
+```ts
+// providers/evolution.ts
+async sendMessage(to, body) {
+  if (process.env.SHADOW_MODE === 'true') {
+    logger.info('[SHADOW] would send', { to, body: body.slice(0, 80) })
+    return `shadow:${Date.now()}`
+  }
+  // ... envio real
+}
+```
+Deploy Evolution com `SHADOW_MODE=true` primeiro. Receber 30min de webhooks reais, processar com ai-service, gravar tudo em `agent.runs` — mas **não enviar nada**. Validar qualidade antes de ligar envio real.
+
+#### A3.6 — Alerta Telegram em CONNECTION_UPDATE=close
+```ts
+if (event === 'connection.update' && data?.state === 'close') {
+  await sendAlert(`⚠️ Baileys (Evolution/SuperBemBarato) desconectado — state=close`, 'error')
+}
+```
+Sem isso, desconexão silenciosa = cliente descobre antes da gente.
+
+#### A8 REVISADO — Scan QR via Evolution Manager (não api-node)
+```
+https://evolution.pangeia.cloud/manager
+→ login com EVO_KEY (apikey)
+→ instância SuperBemBarato → Connect → QR visible
+→ scanear com chip
+```
+Depois, `/whatsapp/qr` do nosso api-node vira redirect/proxy pro Evolution Manager OU renderiza QR inline via `GET /instance/connect/SuperBemBarato`.
+
+#### A9 REVISADO — Rollback plan explícito
+Se cutover quebra:
+```bash
+# 1. Desativar webhook Evolution → api-node (volta pro Chatwoot legacy se existir)
+curl -X DELETE -H "apikey: $EVO_KEY" $EVO_URL/webhook/SuperBemBarato
+
+# 2. Coolify env WHATSAPP_PROVIDER=baileys (session Baileys ainda existe no volume?)
+curl -X PATCH "https://coolify.pangeia.cloud/api/v1/applications/f88swo04ogw0wo8w00okcw8c/envs" \
+  -H "Authorization: Bearer $COOLIFY_API_KEY" -d '{"key":"WHATSAPP_PROVIDER","value":"baileys"}'
+
+# 3. Se session Baileys foi apagada: reativar workflow N8N 01.Secretaria
+curl -X PATCH "https://n8nsuperbembarato.pangeia.cloud/api/v1/workflows/g0ESSfSDxkFqkuxl" \
+  -H "X-N8N-API-KEY: $N8N_API_KEY" -d '{"active":true}'
+```
+
+---
+
+### Fase 2.5 (NOVA) — Rate limit por waId (obrigatório antes de primeiro cliente real)
+
+Movido pra antes do Dock. Sem rate limit, cliente louco mandando 200 msgs/min = custo OpenAI + trigger ban. Código em `PLAN-TO-PROD.md` Fase 1.2 original permanece válido.
+
+**Burst test antes de considerar seguro:**
+```bash
+# Disparar 5 webhooks em 3s com waIds diferentes
+for i in 1 2 3 4 5; do
+  curl -X POST https://auzap-api.pangeia.cloud/whatsapp/webhook/evolution \
+    -H "apikey: $EVO_KEY" \
+    -d "{\"event\":\"messages.upsert\",\"instance\":\"SuperBemBarato\",\"data\":{\"key\":{\"id\":\"wamid.test$i\",\"remoteJid\":\"556399999999$i@s.whatsapp.net\",\"fromMe\":false},\"message\":{\"conversation\":\"teste $i\"}}}" &
+done
+wait
+# Conferir que todas 5 viraram turns
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM crm.mensagens WHERE created_at > NOW() - INTERVAL '30 seconds'"
+```
+
+**Burst mesmo waId (coalescing singletonKey):**
+```bash
+# 5 msgs do MESMO telefone em 3s
+for i in 1 2 3 4 5; do
+  curl -X POST ... -d "{\"event\":\"messages.upsert\",\"data\":{\"key\":{\"id\":\"wamid.burst$i\",\"remoteJid\":\"5563912345678@s.whatsapp.net\",\"fromMe\":false},\"message\":{\"conversation\":\"msg $i\"}}}" &
+done
+wait
+# Pode virar 1 turn coalescido (correto) OU 5 turns sequenciais — validar comportamento real
+```
+
+---
+
+### Fase 3 (Dock global) — Adiado para +48h pós-Evolution estável
+
+Não executar junto com Evolution. Motivo: rollback de canal com Dock no ar = 2 commits pra bisect. Fazer depois com sistema estável.
+
+Implementação com feature flag: mergeia `AppLayout` com `DOCK_EVERYWHERE=false` default. Vira true após inspeção visual em staging.
+
+---
+
+### Fase 4 ADICIONAL — WABA Cloud API paralelo (processo começa hoje)
+
+Em paralelo a tudo (não bloqueia nada):
+1. User abre `business.facebook.com` → WhatsApp Accounts → Create
+2. Business verification SBB (CNPJ + docs) — 1-3 dias Meta review
+3. Número novo dedicado (pode ser mesmo chip do Evolution ou outro)
+4. System User permanent token
+5. Template de saudação aprovado
+6. Quando pronto: envs `WABA_*` já existem no Coolify (seto via API). Switch `WHATSAPP_PROVIDER=cloud_api` = saída definitiva do Baileys.
+
+---
+
+### Risk register atualizado (honesto)
+
+| Risco | Status | Mitigação atual | Escape permanente |
+|---|---|---|---|
+| Ban Baileys (dentro da Evolution) | ATIVO — aceito | warm-up chip, rate limit, shadow mode, alerta CONNECTION_UPDATE | WABA Cloud API em 2-3 semanas |
+| VITE_INTERNAL_API_KEY bundle | RESOLVIDO em Fase 0.7 (Cloudflare Access) | — | — |
+| SPOF host Coolify único | ATIVO | backup diário + monitoring | Managed Postgres (Neon) + Cloudflare Tunnel em ≤60d |
+| Evolution shared LGPD | ATIVO | documentar RIPD | Evolution dedicada em ≤30d |
+| Bug Evolution 2.3.7 #2390 | PENDENTE teste A0 | downgrade 2.3.6 se confirmado | — |
+| Chip novo banável rápido | PENDENTE decisão user (0.5.2) | warm-up 7-14d OU aceitar | — |
+
+---
+
+### Ordem final de execução (hoje + próximas 72h)
+
+**Dia 0 (hoje, 4-5h):**
+1. 0.5 Pré-Evolution checks (30min)
+2. 0.7 Cloudflare Access (2h)
+3. A0 Baseline Maria-N8N (30min, pode paralelizar com 0.7)
+4. 2.5 Rate limit middleware + burst tests em staging (1h)
+5. 2 Provider Evolution com filter fromMe + instance check + CONNECTION_UPDATE alert (2h)
+6. Deploy com SHADOW_MODE=true → scan QR → 30min observação
+7. Se shadow OK: `SHADOW_MODE=false` → primeiras mensagens reais em círculo interno
+
+**Dia +1 (24h observação Evolution):**
+- Monitorar agent.runs, custo OpenAI, reconexões
+- Se estável: começar Fase 3 (Dock global)
+
+**Dia +3 (72h+):**
+- Revisar métricas vs baseline Maria-N8N
+- Decidir se libera pra clientes reais
+
+**Semana +1-2:**
+- Abrir processo WABA Cloud API (Fase 4)
+- Iniciar Evolution dedicada planning (Fase 3.1 revisada)
+
+---
+
+
+
 ## Resumo (16 itens)
 
 | # | Fase | Item | Automação | Tempo |
