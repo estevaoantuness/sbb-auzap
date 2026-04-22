@@ -161,3 +161,93 @@ function maskDatabaseUrl(url: string | undefined): string {
     return '***'
   }
 }
+
+// ─── POST /dev-tools/run-readonly-query ──────────────────────────────────────
+/**
+ * Executa SELECT/CTE readonly contra o banco Prisma. Uso restrito a coletar
+ * métricas/baselines (ex.: baseline-maria.sql pré-cutover Evolution).
+ *
+ * Body: { sql: string }
+ *
+ * Validações defensivas:
+ *  - Uma única instrução (sem `;` interno)
+ *  - Só começa com SELECT ou WITH
+ *  - Proíbe palavras-chave de escrita (INSERT/UPDATE/DELETE/DROP/ALTER/...)
+ *  - Envolve em BEGIN READ ONLY / ROLLBACK (defesa em profundidade)
+ *  - Statement timeout 20s
+ *  - Cap de 200 linhas no resultado
+ */
+const FORBIDDEN_KEYWORDS = [
+  'insert', 'update', 'delete', 'drop', 'alter', 'truncate', 'create',
+  'grant', 'revoke', 'comment', 'vacuum', 'analyze', 'copy', 'call',
+  'do', 'merge', 'reindex', 'refresh', 'notify', 'listen', 'unlisten',
+  'reset', 'set ', 'lock ', 'prepare', 'execute', 'declare', 'fetch ',
+  'move ', 'close ', 'security',
+]
+
+function validateReadonlySql(raw: string): { ok: true; sql: string } | { ok: false; error: string } {
+  if (typeof raw !== 'string') return { ok: false, error: 'sql deve ser string' }
+  let sql = raw.trim()
+  if (!sql) return { ok: false, error: 'sql vazio' }
+
+  // Remove trailing semicolons (mas só o último/último whitespace)
+  sql = sql.replace(/;\s*$/, '').trim()
+
+  // Veta múltiplas instruções
+  if (sql.includes(';')) return { ok: false, error: 'múltiplas instruções não permitidas' }
+
+  const lower = sql.toLowerCase()
+  if (!/^(\s*)(select|with)\b/.test(lower)) {
+    return { ok: false, error: 'sql deve começar com SELECT ou WITH' }
+  }
+
+  for (const kw of FORBIDDEN_KEYWORDS) {
+    // Regex boundary simplificado: palavra seguida de espaço/paren/eol
+    const re = new RegExp(`\\b${kw.trim()}\\b`, 'i')
+    if (re.test(lower)) {
+      return { ok: false, error: `palavra-chave bloqueada: ${kw.trim()}` }
+    }
+  }
+
+  if (sql.length > 8000) return { ok: false, error: 'sql muito longo' }
+
+  return { ok: true, sql }
+}
+
+export async function runReadonlyQuery(req: Request, res: Response) {
+  try {
+    const check = validateReadonlySql(req.body?.sql)
+    if (!check.ok) {
+      return res.status(400).json({ error: check.error })
+    }
+
+    const startedAt = Date.now()
+
+    // Transaction READ ONLY + statement_timeout como defesa em profundidade.
+    const rows = await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY')
+      await tx.$executeRawUnsafe("SET LOCAL statement_timeout = '20s'")
+      return tx.$queryRawUnsafe(check.sql)
+    })
+
+    const elapsedMs = Date.now() - startedAt
+    const arr = Array.isArray(rows) ? rows : [rows]
+    const capped = arr.slice(0, 200)
+
+    res.json(
+      serializeBigInt({
+        rows: capped,
+        row_count: arr.length,
+        capped_at: 200,
+        truncated: arr.length > capped.length,
+        elapsed_ms: elapsedMs,
+      })
+    )
+  } catch (err) {
+    console.error('[dev-tools] run-readonly-query:', err)
+    res.status(500).json({
+      error: 'Query failed',
+      detail: (err as Error).message,
+    })
+  }
+}
