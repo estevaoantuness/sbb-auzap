@@ -4,6 +4,7 @@ import { handleEvolutionWebhook } from './evolutionWebhookController'
 import { verifyMetaSignature, verifyChallenge } from '../../middleware/metaSignature'
 import { evolutionWebhookGuard } from '../../middleware/evolutionWebhookGuard'
 import { getProvider } from './providers'
+import { evolutionInternals } from './providers/evolution'
 
 const router = Router()
 
@@ -46,6 +47,50 @@ router.post('/disconnect', async (_req, res) => {
   }
   await provider.disconnect()
   res.json({ ok: true })
+})
+
+// ── Pairing code (só Evolution): código de 8 dígitos como alternativa ao QR
+// Mais confiável que escanear QR quando o scanner falha por qualquer motivo.
+router.post('/pairing-code', async (req, res) => {
+  const provider = process.env.WHATSAPP_PROVIDER || 'baileys'
+  if (provider !== 'evolution') {
+    return res.status(404).json({ ok: false, error: 'pairing-code só disponível no Evolution' })
+  }
+  const phone = req.body?.phoneNumber || req.body?.phone
+  if (!phone || typeof phone !== 'string') {
+    return res.status(400).json({ ok: false, error: 'body.phoneNumber é obrigatório (E.164)' })
+  }
+  try {
+    const rawState = await evolutionInternals.getInstanceRawState()
+    if (rawState === 'open') {
+      return res.json({ ok: true, connected: true, message: 'WhatsApp já está conectado' })
+    }
+    const result = await evolutionInternals.requestPairingCode(phone)
+    return res.json({
+      ok: true,
+      connected: false,
+      pairingCode: result.pairingCode,
+      instructions:
+        'No WhatsApp: Configurações → Aparelhos conectados → Conectar um aparelho → Conectar com número de telefone → digite o código',
+    })
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || 'pairing-code falhou' })
+  }
+})
+
+// ── Reconnect (só Evolution): logout+delete+create+connect — limpa sessão
+// presa quando o pareamento falha várias vezes.
+router.post('/reconnect', async (_req, res) => {
+  const provider = process.env.WHATSAPP_PROVIDER || 'baileys'
+  if (provider !== 'evolution') {
+    return res.status(404).json({ ok: false, error: 'reconnect só disponível no Evolution' })
+  }
+  try {
+    const result = await evolutionInternals.reconnect()
+    return res.json({ ok: true, qrCodeDataUrl: result.qr })
+  } catch (err: any) {
+    return res.status(500).json({ ok: false, error: err?.message || 'reconnect falhou' })
+  }
 })
 
 export default router

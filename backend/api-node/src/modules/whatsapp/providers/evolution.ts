@@ -9,11 +9,151 @@
  */
 
 import type { MessagingProvider, ProviderStatus, SendOptions } from './types'
+import * as qrCache from './evolutionQrCache'
 
 interface EvolutionEnv {
   url: string
   apiKey: string
   instance: string
+}
+
+function formatPhoneNumber(raw: string): string {
+  // strip tudo que não é dígito
+  return raw.replace(/\D+/g, '')
+}
+
+/** Exposto para rotas internas (pairing-code, reconnect) e webhook handler */
+export const evolutionInternals = {
+  loadEnv,
+  qrCache,
+  async getInstanceRawState(): Promise<string> {
+    const env = loadEnv()
+    const res = await fetch(
+      `${env.url}/instance/connectionState/${env.instance}`,
+      { headers: { apikey: env.apiKey } },
+    )
+    if (!res.ok) return 'unknown'
+    const data: any = await res.json().catch(() => ({}))
+    return data?.instance?.state || data?.state || 'unknown'
+  },
+
+  async requestPairingCode(phoneNumber: string): Promise<{
+    pairingCode: string | null
+    code: string | null
+  }> {
+    const env = loadEnv()
+    const formatted = formatPhoneNumber(phoneNumber)
+    const url = `${env.url}/instance/connect/${env.instance}?number=${formatted}`
+    const res = await fetch(url, { headers: { apikey: env.apiKey } })
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`[evolution] pairing-code ${res.status}: ${body.slice(0, 300)}`)
+    }
+    const data: any = await res.json().catch(() => ({}))
+    let pairingCode: string | null = data?.pairingCode || null
+    // Evolution às vezes devolve em `code` quando é curto (8 chars)
+    if (!pairingCode && typeof data?.code === 'string' && data.code.length === 8) {
+      pairingCode = data.code
+    }
+    if (pairingCode && pairingCode.length === 8 && !pairingCode.includes('-')) {
+      pairingCode = `${pairingCode.slice(0, 4)}-${pairingCode.slice(4)}`
+    }
+    return {
+      pairingCode,
+      code: typeof data?.code === 'string' ? data.code : null,
+    }
+  },
+
+  /**
+   * Reconexão limpa — Mevo usa esse fluxo quando a instância está presa:
+   *   logout → delete → create → connect (QR novo).
+   * Evolution não permite re-conectar sem deletar/criar.
+   */
+  async reconnect(): Promise<{ qr: string | null }> {
+    const env = loadEnv()
+    qrCache.clearQR(env.instance)
+
+    // 1. logout (ignore erros — instância pode já estar close)
+    await fetch(`${env.url}/instance/logout/${env.instance}`, {
+      method: 'DELETE',
+      headers: { apikey: env.apiKey },
+    }).catch(() => null)
+
+    // 2. delete (limpa sessão armazenada no Evolution Postgres/redis)
+    await fetch(`${env.url}/instance/delete/${env.instance}`, {
+      method: 'DELETE',
+      headers: { apikey: env.apiKey },
+    }).catch(() => null)
+
+    // 3. create (restaura do zero)
+    await fetch(`${env.url}/instance/create`, {
+      method: 'POST',
+      headers: {
+        apikey: env.apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        instanceName: env.instance,
+        integration: 'WHATSAPP-BAILEYS',
+        qrcode: true,
+        rejectCall: true,
+        msgCall: 'Atendimento por mensagem de texto, por favor.',
+        groupsIgnore: true,
+        alwaysOnline: false,
+        readMessages: false,
+        readStatus: false,
+        syncFullHistory: false,
+      }),
+    })
+
+    // 4. reconfigurar webhook (delete apaga)
+    const webhookUrl = process.env.EVOLUTION_WEBHOOK_URL
+      || 'https://auzap-api.pangeia.cloud/whatsapp/webhook/evolution'
+    await fetch(`${env.url}/webhook/set/${env.instance}`, {
+      method: 'POST',
+      headers: {
+        apikey: env.apiKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        webhook: {
+          enabled: true,
+          url: webhookUrl,
+          webhookByEvents: false,
+          webhookBase64: false,
+          events: [
+            'MESSAGES_UPSERT',
+            'CONNECTION_UPDATE',
+            'SEND_MESSAGE',
+            'MESSAGES_UPDATE',
+            'QRCODE_UPDATED',
+          ],
+          headers: { apikey: env.apiKey },
+        },
+      }),
+    }).catch((err) => {
+      console.warn('[evolution] reconnect: setWebhook falhou (não-fatal)', err)
+    })
+
+    // 5. connect (gera primeiro QR)
+    const res = await fetch(
+      `${env.url}/instance/connect/${env.instance}`,
+      { headers: { apikey: env.apiKey } },
+    )
+    if (!res.ok) {
+      const body = await res.text().catch(() => '')
+      throw new Error(`[evolution] reconnect connect ${res.status}: ${body.slice(0, 300)}`)
+    }
+    const data: any = await res.json().catch(() => ({}))
+    const base64: string | undefined =
+      data?.base64 || data?.qrcode?.base64 || data?.qr
+    if (!base64) return { qr: null }
+    const qr = base64.startsWith('data:image/')
+      ? base64
+      : `data:image/png;base64,${base64}`
+    qrCache.setQR(env.instance, qr)
+    return { qr }
+  },
 }
 
 function mustEnv(key: string): string {
@@ -199,6 +339,15 @@ export const evolutionProvider: MessagingProvider = {
 
   async getQR(): Promise<string | null> {
     const env = loadEnv()
+
+    // Prefere QR cacheado via webhook qrcode.updated (mais fresco — sai do
+    // próprio Evolution Baileys na hora que rotaciona).
+    const cached = qrCache.getQR(env.instance)
+    if (cached) return cached
+
+    // Fallback: pede direto ao Evolution. Chamar /instance/connect também
+    // causa uma nova rotação server-side — barato, mas não queremos fazer
+    // a cada poll se já temos QR recente no cache.
     try {
       const res = await fetch(`${env.url}/instance/connect/${env.instance}`, {
         headers: { apikey: env.apiKey },
@@ -208,8 +357,11 @@ export const evolutionProvider: MessagingProvider = {
       const base64: string | undefined =
         data?.base64 || data?.qrcode?.base64 || data?.qr
       if (!base64) return null
-      if (base64.startsWith('data:image/')) return base64
-      return `data:image/png;base64,${base64}`
+      const qr = base64.startsWith('data:image/')
+        ? base64
+        : `data:image/png;base64,${base64}`
+      qrCache.setQR(env.instance, qr)
+      return qr
     } catch (err) {
       console.warn('[evolution] getQR falhou', err)
       return null

@@ -14,6 +14,7 @@
 import type { Request, Response } from 'express'
 import { enqueueInbound, InboundJob } from '../../lib/queue'
 import { sendAlert } from '../../lib/telegramAlert'
+import * as qrCache from './providers/evolutionQrCache'
 
 // Payload Evolution é bruto — any aqui é deliberado (único ponto de `any` permitido)
 interface EvolutionPayload {
@@ -105,6 +106,10 @@ export async function handleEvolutionWebhook(
         instance,
         state: data?.state,
       })
+      // Ao abrir (pareou!) ou fechar: invalida QR cache — não serve mais
+      if (data?.state === 'open' || data?.state === 'close') {
+        qrCache.clearQR(instance)
+      }
       if (data?.state === 'close') {
         await sendAlert(
           `⚠️ Evolution/${instance} desconectado (connection.update state=close)`,
@@ -112,6 +117,27 @@ export async function handleEvolutionWebhook(
         ).catch((err) =>
           console.error('[evolution] sendAlert falhou', err),
         )
+      }
+      return
+    }
+
+    // qrcode.updated — Evolution empurra QR fresco a cada rotação (~30s).
+    // Cacheamos pra servir na próxima chamada de /whatsapp/qr (mais fresco
+    // que pedir via /instance/connect toda hora).
+    if (event === 'qrcode.updated') {
+      const base64: string | undefined =
+        data?.qrcode?.base64 || data?.base64 || data?.qr
+      if (base64) {
+        qrCache.setQR(instance, base64)
+        console.log('[evolution] qrcode.updated → cache atualizado', {
+          instance,
+          qrLen: base64.length,
+        })
+      } else {
+        console.warn('[evolution] qrcode.updated sem base64 — ignorado', {
+          instance,
+          dataKeys: data ? Object.keys(data) : null,
+        })
       }
       return
     }
