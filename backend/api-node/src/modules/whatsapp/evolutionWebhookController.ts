@@ -78,6 +78,17 @@ export async function handleEvolutionWebhook(
 
     const expectedInstance = process.env.EVOLUTION_INSTANCE || 'SuperBemBarato'
 
+    // TEMP DEBUG: log every webhook event (remove once pairing is stable)
+    console.log('[evolution:debug] webhook IN', {
+      event,
+      instance,
+      expectedInstance,
+      dataKeys: data ? Object.keys(data) : null,
+      state: data?.state,
+      fromMe: data?.key?.fromMe,
+      remoteJid: data?.key?.remoteJid,
+    })
+
     // Guard 1: cross-tenant protection
     if (instance !== expectedInstance) {
       console.warn('[evolution] webhook de instance inesperada — ignorado', {
@@ -88,17 +99,20 @@ export async function handleEvolutionWebhook(
       return
     }
 
-    // Guard 3: connection.update com state=close → alerta operador
-    if (event === 'connection.update' && data?.state === 'close') {
-      console.error('[evolution] connection.update state=close', {
+    // connection.update — log all states (close triggers Telegram alert)
+    if (event === 'connection.update') {
+      console.log('[evolution] connection.update', {
         instance,
+        state: data?.state,
       })
-      await sendAlert(
-        `⚠️ Evolution/${instance} desconectado (connection.update state=close)`,
-        'error',
-      ).catch((err) =>
-        console.error('[evolution] sendAlert falhou', err),
-      )
+      if (data?.state === 'close') {
+        await sendAlert(
+          `⚠️ Evolution/${instance} desconectado (connection.update state=close)`,
+          'error',
+        ).catch((err) =>
+          console.error('[evolution] sendAlert falhou', err),
+        )
+      }
       return
     }
 
