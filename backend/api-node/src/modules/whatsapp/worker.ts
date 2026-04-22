@@ -29,6 +29,7 @@ import {
   MediaTooLargeError,
   AudioTooLongError,
 } from './mediaDownloader'
+import { rateLimitByWaId, RATE_LIMIT_MAX_PER_WINDOW } from '../../middleware/rateLimit'
 
 // ─────────────────────────────────────────────────────────────
 // Config
@@ -506,6 +507,18 @@ export async function startInboundWorker(): Promise<void> {
 
   await registerInboundWorker(async (jobs: InboundJob[]) => {
     for (const job of jobs) {
+      const { allowed, count, resetIn } = rateLimitByWaId(job.waId)
+      if (!allowed) {
+        console.warn('[worker] rate limited', { waId: job.waId, count, resetIn })
+        // Informa o cliente UMA ÚNICA VEZ (quando cruzar o limite)
+        if (count === RATE_LIMIT_MAX_PER_WINDOW + 1) {
+          await providerSend(
+            job.waId,
+            'Oi! Muitas mensagens em pouco tempo. Vou responder em instantes, aguarde 🙏'
+          ).catch(() => {})
+        }
+        continue
+      }
       try {
         await processJob(job)
       } catch (err) {
