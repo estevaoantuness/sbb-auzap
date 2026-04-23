@@ -37,9 +37,16 @@ def _store_settings() -> dict[str, str]:
 
 
 async def _upsert_lead(conn: asyncpg.Connection, telefone: str) -> int:
-    """Upsert lead via RPC (fallback: insert idempotente)."""
+    """Upsert lead via RPC (fallback: insert idempotente).
+
+    crm.upsert_customer é wrapper que chama public.upsert_customer e devolve
+    SETOF crm.leads. Precisamos extrair só o id — daí o 'SELECT id FROM'.
+    """
     try:
-        lead_id = await conn.fetchval("SELECT crm.upsert_customer($1, NULL)", telefone)
+        lead_id = await conn.fetchval(
+            "SELECT id FROM crm.upsert_customer($1, NULL, NULL, NULL, NULL)",
+            telefone,
+        )
         if lead_id is not None:
             return int(lead_id)
     except asyncpg.PostgresError as exc:
@@ -60,8 +67,16 @@ async def _upsert_lead(conn: asyncpg.Connection, telefone: str) -> int:
 async def _load_lead(conn: asyncpg.Connection, lead_id: int) -> dict[str, Any]:
     row = await conn.fetchrow(
         """
-        SELECT id, nome, telefone, email, bairro, segmento_rfm, total_pedidos,
-               top_categorias, criado_em, ultima_interacao_em
+        SELECT id,
+               COALESCE(nome_real, nome_whatsapp, apelido) AS nome,
+               telefone,
+               bairro,
+               segmento_rfm,
+               total_pedidos,
+               total_gasto,
+               top_categorias,
+               created_at AS criado_em,
+               ultima_conversa_at AS ultima_interacao_em
         FROM crm.leads
         WHERE id = $1
         """,
