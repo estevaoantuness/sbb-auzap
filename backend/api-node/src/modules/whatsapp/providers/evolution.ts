@@ -313,13 +313,18 @@ export const evolutionProvider: MessagingProvider = {
               i?.name === env.instance,
           )
           phoneNumber =
+            me?.ownerJid ||
+            me?.instance?.ownerJid ||
             me?.instance?.owner ||
             me?.owner ||
-            me?.instance?.profileName ||
             me?.number ||
+            me?.instance?.profileName ||
+            me?.profileName ||
             undefined
           if (typeof phoneNumber === 'string') {
-            phoneNumber = phoneNumber.replace(/@s\.whatsapp\.net$/, '')
+            phoneNumber = phoneNumber
+              .replace(/@s\.whatsapp\.net$/, '')
+              .replace(/@c\.us$/, '')
           }
         }
       } catch (err) {
