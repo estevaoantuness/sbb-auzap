@@ -14,7 +14,9 @@
 
 import { getBoss } from '../../lib/queue'
 import { prisma } from '../../lib/db'
-import { sendMessage as providerSend } from './providers/cloudApi'
+import { getProvider } from './providers'
+const providerSend = (to: string, text: string): Promise<string> =>
+  getProvider().sendMessage(to, text)
 import { sendAlert } from '../../lib/telegramAlert'
 
 export const QUEUE_RETRY_SEND = 'auzap:retry_send'

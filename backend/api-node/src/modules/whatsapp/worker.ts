@@ -21,7 +21,11 @@ import {
   InboundJob,
 } from '../../lib/queue'
 import { prisma } from '../../lib/db'
-import { sendMessage as providerSend } from './providers/cloudApi'
+import { getProvider } from './providers'
+// Compat: mantém assinatura providerSend(to, text) usando o provider ativo
+// (evolution/baileys/cloud_api) selecionado via WHATSAPP_PROVIDER.
+const providerSend = (to: string, text: string): Promise<string> =>
+  getProvider().sendMessage(to, text)
 import { enqueueRetry } from './retrySender'
 import { sendAlert } from '../../lib/telegramAlert'
 import {
